@@ -1,0 +1,107 @@
+# ==============================================================================
+#  z2roN_Net (네트워크 정보 보기) 자동 빌드 : Android APK + Windows (zip, 설치 파일)
+# ==============================================================================
+#  1) 이 프로젝트 전체(.github 폴더 포함)를 GitHub 저장소에 올립니다.
+#  2) Actions > "z2roN_Net 빌드" > Run workflow  (main 에 올리면 자동 실행)
+#  3) 몇 분 뒤 실행 맨 아래 Artifacts 에서 내려받습니다.
+#       - z2roN_Net-android-v버전  : z2roN_Net.apk (휴대폰에 설치)
+#       - z2roN_Net-windows-v버전  : z2roN_Net_Setup_v버전.exe (설치 파일) 와
+#                                    z2roN_Net_windows_v버전.zip (설치 없이 압축만 풀어 z2ron_net.exe 실행)
+#  동작: flutter create 로 뼈대를 만든 뒤, 이 저장소의 pubspec.yaml / lib 와
+#        android_patch(안드로이드) / windows_patch(윈도우) 를 덮어써서 빌드합니다. 플러그인은 쓰지 않습니다.
+#  실패하면 빨간 X 단계의 마지막 로그를 복사해서 알려주세요.
+# ==============================================================================
+name: z2roN_Net 빌드
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: 안드로이드 뼈대 만들기
+        run: flutter create --org com.z2ron --project-name z2ron_net --platforms=android app_tmp
+      - name: 소스 덮어쓰기 + 안드로이드 설정
+        run: |
+          cp pubspec.yaml app_tmp/pubspec.yaml
+          rm -rf app_tmp/lib app_tmp/test
+          cp -r lib app_tmp/lib
+          python3 tools/patch_android.py app_tmp
+      - name: APK 빌드
+        working-directory: app_tmp
+        run: |
+          flutter pub get
+          flutter build apk --release
+      - name: 버전 읽기
+        id: ver
+        run: |
+          echo "v=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' pubspec.yaml | head -1)" >> "$GITHUB_OUTPUT"
+      - name: APK 이름 정리
+        run: cp app_tmp/build/app/outputs/flutter-apk/app-release.apk z2roN_Net.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z2roN_Net-android-v${{ steps.ver.outputs.v }}
+          path: z2roN_Net.apk
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+      - name: 윈도우 뼈대 만들기
+        run: flutter create --org com.z2ron --project-name z2ron_net --platforms=windows app_tmp
+      - name: 소스 덮어쓰기 + 윈도우 설정
+        shell: bash
+        run: |
+          cp pubspec.yaml app_tmp/pubspec.yaml
+          rm -rf app_tmp/lib app_tmp/test
+          cp -r lib app_tmp/lib
+          python tools/patch_windows.py app_tmp
+      - name: 윈도우 빌드
+        working-directory: app_tmp
+        run: |
+          flutter pub get
+          flutter build windows --release
+      - name: 버전 읽기
+        id: ver
+        shell: bash
+        run: |
+          echo "v=$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' pubspec.yaml | head -1)" >> "$GITHUB_OUTPUT"
+      - name: 실행에 필요한 런타임 DLL 함께 넣기
+        shell: pwsh
+        run: |
+          $rel = "app_tmp/build/windows/x64/runner/Release"
+          foreach ($d in 'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll') {
+            $p = Join-Path $env:SystemRoot "System32\$d"
+            if (Test-Path $p) { Copy-Item $p $rel -Force }
+          }
+      - name: 압축 파일 만들기
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "app_tmp/build/windows/x64/runner/Release/*" -DestinationPath "dist/z2roN_Net_windows_v${{ steps.ver.outputs.v }}.zip" -Force
+      - name: 설치 파일(exe) 만들기
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.ver.outputs.v }}" tools/windows/installer.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: z2roN_Net-windows-v${{ steps.ver.outputs.v }}
+          path: dist/*
